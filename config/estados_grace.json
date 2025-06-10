@@ -1,0 +1,37 @@
+{
+  "G": {
+    "G1": "Neutra",
+    "G2": "Incómoda",
+    "G3": "Conectada",
+    "G4": "Invisibilizada",
+    "G5": "Fluida"
+  },
+  "R": {
+    "R1": "Estable",
+    "R2": "Tensa",
+    "R3": "Solitaria",
+    "R4": "Enriquecedora",
+    "R5": "Cerrada"
+  },
+  "A": {
+    "A1": "Curiosa",
+    "A2": "Saturada",
+    "A3": "Lúcida",
+    "A4": "Confundida",
+    "A5": "Creativa"
+  },
+  "C": {
+    "C1": "Energética",
+    "C2": "Tensa",
+    "C3": "Cansada",
+    "C4": "Liviana",
+    "C5": "Entumecida"
+  },
+  "E": {
+    "E1": "Inspirada",
+    "E2": "Revuelta",
+    "E3": "Reflexiva",
+    "E4": "Apagada",
+    "E5": "Clara"
+  }
+}
