@@ -2,42 +2,45 @@
 """
 Módulo `storage` para GRACE-vector
 
-Este módulo gestiona el guardado de las entradas diarias en formato JSON,
-creando las carpetas necesarias y nombrando automáticamente los archivos
-según la fecha.
+Este módulo gestiona el guardado de las entradas diarias en formato JSONL,
+creando las carpetas necesarias y agregando cada registro como una nueva línea
+en un archivo único `registro.jsonl`.
 """
 import os
 import json
-from datetime import date
 
 # Carpeta base donde se almacenan los registros diarios
 DATA_DIR = os.path.join("data", "registros")
+# Archivo JSONL donde se agregan las entradas
+JSONL_FILE = "registro.jsonl"
 
 
 def save_entry(entry: dict) -> None:
     """
-    Guarda la entrada diaria de identidad en un archivo JSON.
+    Guarda la entrada diaria de identidad en formato JSONL.
 
     Parámetros:
     - entry: diccionario con las claves 'G','R','A','C','E' y opcionalmente 'note'.
 
-    El archivo se crea en: data/registros/YYYY-MM-DD_GRACE.json
+    El archivo se crea (si no existe) y luego se agrega una línea con la entrada:
+    data/registros/registro.jsonl
     """
     # Asegurar que la carpeta exista
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    # Nombre del archivo con la fecha actual
-    today = date.today().isoformat()
-    filename = f"{today}_GRACE.json"
-    filepath = os.path.join(DATA_DIR, filename)
+    # Ruta completa al archivo JSONL
+    filepath = os.path.join(DATA_DIR, JSONL_FILE)
 
     # Preparar datos a guardar: incluir fecha y todo el contenido de entry
-    data_to_save = {"date": today}
-    data_to_save.update(entry)
+    # No usamos date.today() directamente para permitir probar con otras fechas si se necesita
+    from datetime import date
+    record = {"date": date.today().isoformat()}
+    record.update(entry)
 
-    # Escritura en JSON legible
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+    # Agregar como nueva línea JSON al archivo
+    with open(filepath, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False))
+        f.write("\n")
 
     # Confirmación al usuario
-    print(f"\n💾 Entrada guardada en {filepath}")
+    print(f"\n💾 Entrada agregada en {filepath}")

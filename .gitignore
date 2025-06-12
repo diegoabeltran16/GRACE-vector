@@ -198,3 +198,6 @@ cython_debug/
 .idea/       
 
 data
+
+# Windows-specific files
+rep-export-Windows

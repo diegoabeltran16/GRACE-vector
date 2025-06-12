@@ -1,0 +1,19 @@
+├── .gitignore
+├── CODEOWNERS
+├── config
+│   ├── circumplex_map.json
+│   ├── estados_grace.json
+│   ├── plutchik_map.json
+│   └── tao_map.json
+├── estructura.txt
+├── grace_tracker.py
+├── LICENSE
+├── README.md
+└── utils
+    ├── contextual_analysis.py
+    ├── emotion_circumplex.py
+    ├── emotion_plutchik.py
+    ├── formatter.py
+    ├── grace_analysis.py
+    ├── storage.py
+    └── tao_elements.py
