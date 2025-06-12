@@ -9,11 +9,13 @@
 ├── grace_tracker.py
 ├── LICENSE
 ├── README.md
+├── tests
+│   └── tests_utils.py
 └── utils
     ├── contextual_analysis.py
-    ├── emotion_circumplex.py
-    ├── emotion_plutchik.py
     ├── formatter.py
     ├── grace_analysis.py
-    ├── storage.py
-    └── tao_elements.py
+    ├── model_circumplex.py
+    ├── model_plutchik.py
+    ├── model_tao.py
+    └── storage.py

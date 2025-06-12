@@ -5,6 +5,7 @@ from datetime import date
 from utils.formatter import summarize_vector
 from utils.storage import save_entry
 from utils.grace_analysis import compare_with_previous
+from utils.contextual_analysis import analyze_context
 
 CONFIG_PATH = "config/estados_grace.json"
 
@@ -60,6 +61,12 @@ def main():
     entry = ask_for_inputs(states)
     print("\n📋 Resumen del día:")
     summarize_vector(entry, states)
+    
+    # Análisis contextual (nuevo)
+    context_result = analyze_context(entry)
+    print("\n🔎 Análisis contextual:")
+    print(context_result)
+    
     save_entry(entry)
     compare_with_previous(entry)
 
