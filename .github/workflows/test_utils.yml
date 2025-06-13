@@ -1,5 +1,8 @@
 name: CI - Test Utils
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main, prepare-to-collaborate]
