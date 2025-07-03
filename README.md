@@ -1,2 +1,22 @@
-# Grace-vector
-Registrar el estado diario de identidad en cinco dimensiones: Género, Relaciones, Aprendizaje, Cuerpo y Experiencia. Funciona como una brújula personal sin emitir juicios ni sugerencias, facilitando el autoconocimiento a través de registros simples y estructurados.
+# GRACE-vector
+
+![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
+
+🧭 **GRACE-vector** es un microframework minimalista para registrar y analizar tu estado de identidad diario (Género, Relaciones, Aprendizaje, Cuerpo, Experiencia) con enfoques de:
+
+- Yin/Yang (collapse)
+- Valencia/Arousal (circumplex)
+- Modelos Plutchik y Tao (en desarrollo)
+
+## 🚀 Uso rápido
+```bash
+python grace_tracker.py
+```
+
+- Check-in diario simple.
+- Análisis emocional y vectorial.
+- Tests unitarios integrados.
+
+---
+**Más información pronto**: diagramas y documentación avanzada.
+

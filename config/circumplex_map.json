@@ -1,0 +1,31 @@
+{
+  "G1": { "valence": -0.6, "arousal": 0.3 },
+  "G2": { "valence": -0.4, "arousal": 0.4 },
+  "G3": { "valence":  0.0, "arousal": 0.5 },
+  "G4": { "valence":  0.4, "arousal": 0.6 },
+  "G5": { "valence":  0.7, "arousal": 0.7 },
+
+  "R1": { "valence": -0.5, "arousal": 0.3 },
+  "R2": { "valence": -0.3, "arousal": 0.6 },
+  "R3": { "valence":  0.0, "arousal": 0.5 },
+  "R4": { "valence":  0.5, "arousal": 0.6 },
+  "R5": { "valence":  0.6, "arousal": 0.4 },
+
+  "A1": { "valence": -0.7, "arousal": 0.2 },
+  "A2": { "valence": -0.3, "arousal": 0.5 },
+  "A3": { "valence":  0.0, "arousal": 0.5 },
+  "A4": { "valence":  0.5, "arousal": 0.6 },
+  "A5": { "valence":  0.7, "arousal": 0.8 },
+
+  "C1": { "valence": -0.5, "arousal": 0.2 },
+  "C2": { "valence": -0.3, "arousal": 0.3 },
+  "C3": { "valence":  0.0, "arousal": 0.5 },
+  "C4": { "valence": -0.4, "arousal": 0.7 },
+  "C5": { "valence":  0.6, "arousal": 0.9 },
+
+  "E1": { "valence": -0.6, "arousal": 0.2 },
+  "E2": { "valence": -0.5, "arousal": 0.8 },
+  "E3": { "valence":  0.0, "arousal": 0.5 },
+  "E4": { "valence":  0.2, "arousal": 0.4 },
+  "E5": { "valence":  0.5, "arousal": 0.6 }
+}
