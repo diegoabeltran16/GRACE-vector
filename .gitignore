@@ -201,3 +201,7 @@ data
 
 # Windows-specific files
 rep-export-Windows
+
+.CI_CD_docs/
+CI_CD_docs/
+CI_CD_docs
