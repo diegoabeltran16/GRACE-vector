@@ -197,7 +197,10 @@ cython_debug/
 .vscode/
 .idea/       
 
-data
+data/
+!data/registros/
+data/registros/*
+!data/registros/registro.jsonl
 
 # Windows-specific files
 rep_export_Windows
@@ -209,6 +212,7 @@ CI_CD_docs
 # Claves privadas
 config/private_key.pem
 grace_pipeline/encryption/private_key.pem
+config/secrets/
 
 # Archivos temporales
 *.tmp
