@@ -1,0 +1,5 @@
+{
+  "public_key_path": "grace_pipeline/encryption/public_key.pem",
+  "private_key_path": "grace_pipeline/encryption/private_key.pem",
+  "data_path": "data/registros/registro.jsonl"
+}

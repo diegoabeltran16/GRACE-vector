@@ -200,7 +200,7 @@ cython_debug/
 data
 
 # Windows-specific files
-rep-export-Windows
+rep_export_Windows
 
 .CI_CD_docs/
 CI_CD_docs/

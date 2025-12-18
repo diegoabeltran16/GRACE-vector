@@ -6,7 +6,6 @@ from utils.formatter import summarize_vector
 from utils.storage import save_entry
 from utils.grace_analysis import compare_with_previous
 from utils.contextual_analysis import analyze_context
-from utils.model_collapse import collapse_neutral
 from utils.model_circumplex import analyze_circumplex
 
 CONFIG_PATH = "config/estados_grace.json"
@@ -83,13 +82,12 @@ def ask_for_inputs(states):
 
 def main():
     states = load_states()
-    entry, _ = ask_for_inputs(states)
+    entry, bits = ask_for_inputs(states)  # Usa los bits ya calculados
 
     print("\n📋 Resumen del día:")
     summarize_vector(entry, states)
 
-    # Colapsar estados neutrales a bits
-    bits = collapse_neutral(entry)
+    # Ya NO llames a collapse_neutral(entry)
     print("\n🧬 Vector colapsado (Yin=0 / Yang=1):")
     for dim, bit in bits.items():
         label = 'Yin (0)' if bit == 0 else 'Yang (1)'
