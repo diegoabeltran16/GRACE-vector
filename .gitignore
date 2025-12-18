@@ -205,3 +205,26 @@ rep_export_Windows
 .CI_CD_docs/
 CI_CD_docs/
 CI_CD_docs
+
+# Claves privadas
+config/private_key.pem
+grace_pipeline/encryption/private_key.pem
+
+# Archivos temporales
+*.tmp
+*.temp
+
+# Archivos de logs
+logs/
+*.log
+
+# Archivos de caché o del sistema
+__pycache__/
+*.pyc
+
+# Archivos de entorno virtual
+venv/
+.env
+
+# Archivos cifrados temporales
+data/registros/*.tmp
