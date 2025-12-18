@@ -1,21 +1,74 @@
+├── .github
+│   ├── dependabot.yml
+│   └── workflows
+│       └── test_utils.yml
 ├── .gitignore
+├── CI_CD_docs
+│   └── GRACE-vector (Estudiar).html
 ├── CODEOWNERS
 ├── config
 │   ├── circumplex_map.json
 │   ├── estados_grace.json
 │   ├── plutchik_map.json
 │   └── tao_map.json
+├── data
+│   └── registros
+│       └── registro.jsonl
 ├── estructura.txt
+├── grace_pipeline
+│   └── encryption
+│       └── encryption_config.json
 ├── grace_tracker.py
 ├── LICENSE
 ├── README.md
+├── rep_export_Windows
+│   ├── __init__.py
+│   ├── __pycache__
+│   ├── cli_utils_Windows.py
+│   ├── generate_structure_windows.py
+│   ├── scripts_windows
+│   │   └── export_structure_wrapper_windows.py
+│   ├── tag_mapper_windows.py
+│   ├── tiddler_exporter_windows.py
+│   ├── tiddler_tag_doc_windows
+│   │   └── (Estudiar)(Repository Export).jsonl
+│   └── tiddlers-export
+│       ├── -.github_dependabot.yml.json
+│       ├── -.github_workflows_python-tests.yml.json
+│       ├── -.github_workflows_test_utils.yml.json
+│       ├── -.gitignore.json
+│       ├── -config_circumplex_map.json.json
+│       ├── -config_estados_grace.json.json
+│       ├── -config_plutchik_map.json.json
+│       ├── -config_tao_map.json.json
+│       ├── -estructura.txt.json
+│       ├── -grace_tracker.py.json
+│       ├── -LICENSE.json
+│       ├── -pyproject.toml.json
+│       ├── -README.md.json
+│       ├── -tests_tests_utils.py.json
+│       ├── -utils_comparison.py.json
+│       ├── -utils_contextual_analysis.py.json
+│       ├── -utils_formatter.py.json
+│       ├── -utils_grace_analysis.py.json
+│       ├── -utils_model_circumplex.py.json
+│       ├── -utils_model_collapse.py.json
+│       ├── -utils_model_iching.py.json
+│       ├── -utils_model_plutchik.py.json
+│       ├── -utils_model_tao.py.json
+│       └── -utils_storage.py.json
 ├── tests
+│   ├── __pycache__
 │   └── tests_utils.py
 └── utils
+    ├── __pycache__
+    ├── comparison.py
     ├── contextual_analysis.py
     ├── formatter.py
     ├── grace_analysis.py
     ├── model_circumplex.py
+    ├── model_collapse.py
+    ├── model_iching.py
     ├── model_plutchik.py
     ├── model_tao.py
     └── storage.py
