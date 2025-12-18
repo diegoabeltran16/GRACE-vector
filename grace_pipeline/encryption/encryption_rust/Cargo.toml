@@ -1,0 +1,14 @@
+[package]
+name = "encryption_rust"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "encryption_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
