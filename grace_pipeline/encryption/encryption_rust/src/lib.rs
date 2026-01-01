@@ -4,6 +4,7 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use std::convert::TryInto;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -24,9 +25,9 @@ fn decode_fixed<const N: usize>(label: &str, value: &str) -> PyResult<[u8; N]> {
             decoded.len()
         )));
     }
-    let mut out = [0u8; N];
-    out.copy_from_slice(&decoded);
-    Ok(out)
+    decoded
+        .try_into()
+        .map_err(|_| PyValueError::new_err(format!("failed to convert {label} into fixed-size array")))
 }
 
 fn decode_vec(label: &str, value: &str) -> PyResult<Vec<u8>> {
