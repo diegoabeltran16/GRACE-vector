@@ -51,3 +51,5 @@ git status
 ```
 
 Keeping these guardrails in place ensures the GRACE entries remain private while the repository history shows consistent activity.
+
+For deployment-specific bot safeguards (wake‑word and commit authorization), see the deploy README: [deploy/README.md](deploy/README.md).

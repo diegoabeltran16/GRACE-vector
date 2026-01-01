@@ -180,7 +180,15 @@ def append_plaintext_entry(
     append_entry(file_path, record, dry_run)
 
 
-def run_git(repo_root: Path, data_path: Path, message: str, commit: bool, push: bool) -> None:
+def run_git(
+    repo_root: Path,
+    data_path: Path,
+    message: str,
+    commit: bool,
+    push: bool,
+    push_remote: str | None = None,
+    push_branch: str | None = None,
+) -> None:
     relative = str(data_path.relative_to(repo_root))
     subprocess.run(["git", "add", relative], cwd=repo_root, check=True)
     if not commit:
@@ -189,7 +197,12 @@ def run_git(repo_root: Path, data_path: Path, message: str, commit: bool, push: 
     if commit_proc.returncode != 0:
         raise RuntimeError("git commit failed")
     if push:
-        push_proc = subprocess.run(["git", "push"], cwd=repo_root)
+        cmd = ["git", "push"]
+        if push_remote:
+            cmd.append(push_remote)
+        if push_branch:
+            cmd.append(push_branch)
+        push_proc = subprocess.run(cmd, cwd=repo_root)
         if push_proc.returncode != 0:
             raise RuntimeError("git push failed")
 
@@ -212,6 +225,8 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument("--no-commit", action="store_true", help="Skip git commit step.")
     parser.add_argument("--push", action="store_true", help="Push to remote after committing.")
+    parser.add_argument("--push-remote", help="Remote name to push to (e.g., 'origin').")
+    parser.add_argument("--push-branch", help="Branch name to push (e.g., 'prepare-to-collaborate').")
     parser.add_argument("--commit-message", help="Custom commit message.")
     parser.add_argument("--entry-id", help="Explicit entry identifier.")
     parser.add_argument("--dry-run", action="store_true", help="Show the output without writing or committing.")
@@ -262,8 +277,22 @@ def main() -> None:
         return
 
     commit_message = args.commit_message or f"Encrypted entry {timestamp}"
+    # Allow environment-defined push targets
+    env_push_remote = os.getenv("GRACE_GIT_REMOTE")
+    env_push_branch = os.getenv("GRACE_GIT_BRANCH")
+    push_remote = args.push_remote or env_push_remote
+    push_branch = args.push_branch or env_push_branch
+
     try:
-        run_git(repo_root, data_path, commit_message, not args.no_commit, args.push)
+        run_git(
+            repo_root,
+            data_path,
+            commit_message,
+            not args.no_commit,
+            args.push,
+            push_remote=push_remote,
+            push_branch=push_branch,
+        )
     except (subprocess.CalledProcessError, RuntimeError) as error:
         raise SystemExit(f"Git operation failed: {error}") from error
 
