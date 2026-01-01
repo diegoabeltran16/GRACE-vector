@@ -1,7 +1,10 @@
 import os
+import re
 import sys
 import json
+import time
 import asyncio
+import secrets
 import subprocess
 from pathlib import Path
 
@@ -21,11 +24,16 @@ DEFAULT_TOKEN_FILE = REPO_ROOT / "config" / "secrets" / "grace_bot_token.txt"
 BOT_TOKEN = os.environ.get(TOKEN_ENV_VAR)
 OWNER_ID = os.environ.get("GRACE_OWNER_ID")  # should be numeric string
 ALLOW_PUSH = os.environ.get("GRACE_ALLOW_PUSH") == "1"
+WAKE_KEYWORD = os.environ.get("GRACE_WAKE_KEYWORD", "hola bot").strip() or "hola bot"
+WAKE_TIMEOUT_SECONDS = int(os.environ.get("GRACE_WAKE_TIMEOUT", "900"))  # default 15 min
+COMMIT_CODE_PREFIX = os.environ.get("GRACE_COMMIT_CODE_PREFIX", "GRACE").strip() or "GRACE"
 
 # Session management for guided check-ins
 DIM_ORDER = ["G", "R", "A", "C", "E"]
 SESSION_STEPS = DIM_ORDER + ["NOTE"]
 SESSIONS: dict[int, dict] = {}
+AWAKE_USERS: dict[int, float] = {}
+WAKE_KEYWORD_NORMALIZED = None
 
 # Emojis per dimension for friendlier prompts
 DIM_EMOJI = {
@@ -122,6 +130,23 @@ def _line_count(path: Path):
         return None
 
 
+def _normalize_wake_text(value: str) -> str:
+    lowered = value.strip().lower()
+    collapsed = " ".join(lowered.split())
+    sanitized = re.sub(r"[!¡¿?.,;:()\[\]\-_*`'\"]", "", collapsed)
+    return sanitized
+
+
+WAKE_KEYWORD_NORMALIZED = _normalize_wake_text(WAKE_KEYWORD)
+
+
+def _wake_word_triggered(message_text: str) -> bool:
+    normalized = _normalize_wake_text(message_text)
+    if not normalized:
+        return False
+    return normalized == WAKE_KEYWORD_NORMALIZED or WAKE_KEYWORD_NORMALIZED in normalized
+
+
 def _start_session(user_id: int) -> dict:
     session = {
         "step_index": 0,
@@ -130,6 +155,9 @@ def _start_session(user_id: int) -> dict:
         "note": "",
         "last_options": None,
         "pending_collapse_dim": None,
+        "awaiting_commit_code": False,
+        "commit_code": None,
+        "commit_authorized": False,
     }
     SESSIONS[user_id] = session
     return session
@@ -141,6 +169,21 @@ def _end_session(user_id: int):
 
 def _current_session(user_id: int) -> dict | None:
     return SESSIONS.get(user_id)
+
+
+def _activate_user(user_id: int) -> None:
+    expires = time.monotonic() + WAKE_TIMEOUT_SECONDS
+    AWAKE_USERS[user_id] = expires
+
+
+def _is_user_awake(user_id: int) -> bool:
+    expires = AWAKE_USERS.get(user_id)
+    if not expires:
+        return False
+    if time.monotonic() > expires:
+        AWAKE_USERS.pop(user_id, None)
+        return False
+    return True
 
 
 def _dimension_options(dim: str):
@@ -201,13 +244,24 @@ def is_owner(user):
         return False
 
 
+def _ensure_owner_awake(ctx: commands.Context) -> bool:
+    if not is_owner(ctx.author):
+        raise commands.CheckFailure("Solo la persona propietaria puede usar este bot.")
+    if not _is_user_awake(ctx.author.id):
+        raise commands.CheckFailure(
+            f"Bot inactivo. Envía '{WAKE_KEYWORD}' por DM para activarlo durante unos minutos."
+        )
+    _activate_user(ctx.author.id)
+    return True
+
+
 @bot.event
 async def on_ready():
     print(f"Bot connected as {bot.user} (owner={OWNER_ID}, token_source={_token_source()})")
 
 
 @bot.command(name="status")
-@commands.check(lambda ctx: is_owner(ctx.author))
+@commands.check(_ensure_owner_awake)
 async def status(ctx: commands.Context):
     """Owner-only: return last commit and record count."""
     commit = repo_last_commit_short() or "unknown"
@@ -223,7 +277,7 @@ async def status(ctx: commands.Context):
 
 
 @bot.command(name="checkin")
-@commands.check(lambda ctx: is_owner(ctx.author))
+@commands.check(_ensure_owner_awake)
 async def checkin(ctx: commands.Context):
     """Owner-only guided GRACE check-in (prefer DM for privacy)."""
     if not isinstance(ctx.channel, discord.DMChannel):
@@ -244,7 +298,11 @@ async def checkin(ctx: commands.Context):
     await _prompt_step(ctx.channel, ctx.author.id)
 
 
-async def process_entry(entry_text: str, metadata: dict | None = None) -> str:
+async def process_entry(
+    entry_text: str,
+    metadata: dict | None = None,
+    allow_commit: bool = False,
+) -> str:
     entry_text = entry_text.strip()
     if not entry_text:
         return "Empty message; please send the text you want to save."
@@ -261,10 +319,11 @@ async def process_entry(entry_text: str, metadata: dict | None = None) -> str:
         except Exception:
             return "Could not serialize metadata; please try again."
     # If push is not explicitly allowed on this host, prevent committing/pushing
-    if not ALLOW_PUSH:
-        cmd.append("--no-commit")
-    else:
+    commit_allowed = allow_commit and ALLOW_PUSH
+    if commit_allowed:
         cmd.append("--push")
+    else:
+        cmd.append("--no-commit")
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -286,6 +345,8 @@ async def process_entry(entry_text: str, metadata: dict | None = None) -> str:
                 reply += f"\n{err}"
             elif out:
                 reply += f"\n{out}"
+        if allow_commit and not ALLOW_PUSH:
+            reply += "\nCommit/push no habilitado en este host (GRACE_ALLOW_PUSH!=1)."
         return reply
     except Exception as exc:
         return f"Failed to run pipeline: {exc}"
@@ -334,15 +395,53 @@ async def _finalize_session(channel: discord.abc.Messageable, user_id: int):
         "note_present": bool(note.strip()),
     }
 
-    reply = await process_entry(entry_text, metadata=metadata)
+    reply = await process_entry(
+        entry_text,
+        metadata=metadata,
+        allow_commit=session.get("commit_authorized", False),
+    )
     await channel.send(reply)
     _end_session(user_id)
+
+
+def _generate_commit_code() -> str:
+    return f"{COMMIT_CODE_PREFIX}-{secrets.token_hex(3).upper()}"
+
+
+async def _prompt_commit_code(channel: discord.abc.Messageable, user_id: int):
+    session = _current_session(user_id)
+    if not session:
+        return
+    code = _generate_commit_code()
+    session["commit_code"] = code
+    session["awaiting_commit_code"] = True
+    session["commit_authorized"] = False
+    await channel.send(
+        "Para autorizar commit y push, responde con la clave mostrada a continuación.\n"
+        f"`{code}`\n"
+        "Si prefieres guardar sin commit/push, responde `skip`."
+    )
 
 
 async def _handle_session_message(message: discord.Message):
     user_id = message.author.id
     session = _current_session(user_id)
     content = message.content.strip()
+    _activate_user(user_id)
+
+    if session and session.get("awaiting_commit_code"):
+        if content.lower() == "skip":
+            session["commit_authorized"] = False
+            session["awaiting_commit_code"] = False
+            await _finalize_session(message.channel, user_id)
+            return
+        if session.get("commit_code") and content.strip().upper() == session["commit_code"].upper():
+            session["commit_authorized"] = True
+            session["awaiting_commit_code"] = False
+            await _finalize_session(message.channel, user_id)
+            return
+        await message.channel.send("Clave incorrecta. Copia el código exacto o escribe 'skip'.")
+        return
 
     if not session:
         session = _start_session(user_id)
@@ -376,11 +475,9 @@ async def _handle_session_message(message: discord.Message):
         return
 
     if step == "NOTE":
-        if content.lower() == "skip":
-            session["note"] = ""
-        else:
-            session["note"] = content
-        await _finalize_session(message.channel, user_id)
+        session["note"] = "" if content.lower() == "skip" else content
+        session["step_index"] = len(SESSION_STEPS)
+        await _prompt_commit_code(message.channel, user_id)
         return
 
     # Handle dimension selection
@@ -418,7 +515,7 @@ async def _handle_session_message(message: discord.Message):
 
 
 @bot.command(name="grace")
-@commands.check(lambda ctx: is_owner(ctx.author))
+@commands.check(_ensure_owner_awake)
 async def grace(ctx: commands.Context, *, entry: str | None = None):
     """Owner-only command to log an entry from any channel."""
     if not entry:
@@ -443,11 +540,36 @@ async def on_message(message: discord.Message):
     if not is_owner(message.author):
         return
 
+    normalized = message.content.strip().lower()
+    if _wake_word_triggered(message.content):
+        _activate_user(message.author.id)
+        await message.channel.send(
+            "Bot activado. Dispones de algunos minutos para enviar comandos o completar el check-in."
+        )
+        return
+
+    if not _is_user_awake(message.author.id):
+        await message.channel.send(
+            f"El bot está dormido. Envía '{WAKE_KEYWORD}' para activarlo temporalmente."
+        )
+        return
+
     # Avoid double-handling of commands starting with !
     if message.content.strip().startswith(bot.command_prefix):
         return
 
     await _handle_session_message(message)
+
+
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.CheckFailure):
+        try:
+            await ctx.reply(str(error))
+        except Exception:
+            pass
+        return
+    raise error
 
 
 if __name__ == "__main__":

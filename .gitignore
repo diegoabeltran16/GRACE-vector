@@ -232,3 +232,5 @@ venv/
 
 # Archivos cifrados temporales
 data/registros/*.tmp
+
+deploy/
