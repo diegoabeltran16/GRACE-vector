@@ -13,7 +13,8 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Callable
+import tempfile
 
 try:
     from encryption_rust import encrypt, generate_key
@@ -22,6 +23,93 @@ except ImportError as exc:  # pragma: no cover
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIR / "encryption" / "encryption_config.json"
+
+
+def _default_deploy_key_path() -> Path:
+    candidate = os.environ.get("GRACE_DEPLOY_KEY_PATH")
+    if candidate:
+        return Path(candidate).expanduser().resolve()
+    return (Path.home() / ".ssh" / "github_grace_deploy").resolve()
+
+
+def _start_ssh_agent() -> dict[str, str]:
+    proc = subprocess.run(["ssh-agent", "-s"], capture_output=True, text=True, check=True)
+    env: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if not line or "=" not in line:
+            continue
+        fragment = line.split(";", 1)[0]
+        if "=" not in fragment:
+            continue
+        name, value = fragment.split("=", 1)
+        env[name.strip()] = value.strip()
+    if "SSH_AUTH_SOCK" not in env or "SSH_AGENT_PID" not in env:
+        raise RuntimeError("Unable to parse ssh-agent environment output.")
+    return env
+
+
+def _stop_ssh_agent(agent_env: dict[str, str]) -> None:
+    env = os.environ.copy()
+    env.update(agent_env)
+    subprocess.run(["ssh-agent", "-k"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _create_askpass_script() -> Path:
+    handle = tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8")
+    handle.write("#!/usr/bin/env bash\n")
+    handle.write("if [ -z \"$GRACE_ASKPASS_VALUE\" ]; then exit 1; fi\n")
+    handle.write("printf '%s' \"$GRACE_ASKPASS_VALUE\"\n")
+    handle.close()
+    script_path = Path(handle.name)
+    os.chmod(script_path, 0o700)
+    return script_path
+
+
+def _add_key_with_passphrase(key_path: Path, passphrase: str, agent_env: dict[str, str]) -> None:
+    script_path = _create_askpass_script()
+    env = os.environ.copy()
+    env.update(agent_env)
+    env["SSH_ASKPASS"] = str(script_path)
+    env["SSH_ASKPASS_REQUIRE"] = "force"
+    env.setdefault("DISPLAY", os.environ.get("DISPLAY", ":0"))
+    env["GRACE_ASKPASS_VALUE"] = passphrase
+    try:
+        proc = subprocess.run(
+            ["ssh-add", str(key_path)],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.strip() or proc.stdout.strip() or "ssh-add failed"
+            raise RuntimeError(stderr)
+    finally:
+        try:
+            os.remove(script_path)
+        except OSError:
+            pass
+        env.pop("GRACE_ASKPASS_VALUE", None)
+
+
+def _prepare_git_env() -> tuple[dict[str, str] | None, callable | None]:
+    passphrase = os.environ.get("GRACE_DEPLOY_KEY_PASSPHRASE")
+    if not passphrase:
+        return None, None
+    if os.name == "nt":
+        raise RuntimeError("Automated deploy key unlocking is not supported on Windows hosts.")
+    key_path = _default_deploy_key_path()
+    if not key_path.exists():
+        raise RuntimeError(f"Deploy key not found at {key_path}.")
+    agent_env = _start_ssh_agent()
+    try:
+        _add_key_with_passphrase(key_path, passphrase, agent_env)
+    except Exception:
+        _stop_ssh_agent(agent_env)
+        raise
+    git_env = os.environ.copy()
+    git_env.update(agent_env)
+    git_env.pop("GRACE_DEPLOY_KEY_PASSPHRASE", None)
+    return git_env, lambda: _stop_ssh_agent(agent_env)
 
 
 def load_config() -> Dict[str, Any]:
@@ -189,22 +277,31 @@ def run_git(
     push_remote: str | None = None,
     push_branch: str | None = None,
 ) -> None:
-    relative = str(data_path.relative_to(repo_root))
-    subprocess.run(["git", "add", relative], cwd=repo_root, check=True)
-    if not commit:
-        return
-    commit_proc = subprocess.run(["git", "commit", "-m", message], cwd=repo_root)
-    if commit_proc.returncode != 0:
-        raise RuntimeError("git commit failed")
-    if push:
-        cmd = ["git", "push"]
-        if push_remote:
-            cmd.append(push_remote)
-        if push_branch:
-            cmd.append(push_branch)
-        push_proc = subprocess.run(cmd, cwd=repo_root)
-        if push_proc.returncode != 0:
-            raise RuntimeError("git push failed")
+    git_env, cleanup = _prepare_git_env()
+    env = os.environ.copy()
+    if git_env:
+        env.update(git_env)
+    try:
+        # Only stage the encrypted journal file so accidental edits elsewhere stay local.
+        relative = str(data_path.relative_to(repo_root))
+        subprocess.run(["git", "add", "--", relative], cwd=repo_root, check=True, env=env)
+        if not commit:
+            return
+        commit_proc = subprocess.run(["git", "commit", "-m", message], cwd=repo_root, env=env)
+        if commit_proc.returncode != 0:
+            raise RuntimeError("git commit failed")
+        if push:
+            cmd = ["git", "push"]
+            if push_remote:
+                cmd.append(push_remote)
+            if push_branch:
+                cmd.append(push_branch)
+            push_proc = subprocess.run(cmd, cwd=repo_root, env=env)
+            if push_proc.returncode != 0:
+                raise RuntimeError("git push failed")
+    finally:
+        if cleanup:
+            cleanup()
 
 
 def parse_arguments() -> argparse.Namespace:
