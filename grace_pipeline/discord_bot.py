@@ -27,6 +27,7 @@ ALLOW_PUSH = os.environ.get("GRACE_ALLOW_PUSH") == "1"
 WAKE_KEYWORD = os.environ.get("GRACE_WAKE_KEYWORD", "hola bot").strip() or "hola bot"
 WAKE_TIMEOUT_SECONDS = int(os.environ.get("GRACE_WAKE_TIMEOUT", "900"))  # default 15 min
 COMMIT_CODE_PREFIX = os.environ.get("GRACE_COMMIT_CODE_PREFIX", "GRACE").strip() or "GRACE"
+REQUIRE_PASSPHRASE = os.environ.get("GRACE_REQUIRE_PASSPHRASE", "1") != "0"
 
 # Session management for guided check-ins
 DIM_ORDER = ["G", "R", "A", "C", "E"]
@@ -147,6 +148,10 @@ def _wake_word_triggered(message_text: str) -> bool:
     return normalized == WAKE_KEYWORD_NORMALIZED or WAKE_KEYWORD_NORMALIZED in normalized
 
 
+def _passphrase_required() -> bool:
+    return ALLOW_PUSH and REQUIRE_PASSPHRASE
+
+
 def _start_session(user_id: int) -> dict:
     session = {
         "step_index": 0,
@@ -158,6 +163,8 @@ def _start_session(user_id: int) -> dict:
         "awaiting_commit_code": False,
         "commit_code": None,
         "commit_authorized": False,
+        "awaiting_passphrase": False,
+        "deploy_passphrase": None,
     }
     SESSIONS[user_id] = session
     return session
@@ -302,6 +309,7 @@ async def process_entry(
     entry_text: str,
     metadata: dict | None = None,
     allow_commit: bool = False,
+    deploy_passphrase: str | None = None,
 ) -> str:
     entry_text = entry_text.strip()
     if not entry_text:
@@ -325,12 +333,17 @@ async def process_entry(
     else:
         cmd.append("--no-commit")
 
+    env = os.environ.copy()
+    if allow_commit and deploy_passphrase:
+        env["GRACE_DEPLOY_KEY_PASSPHRASE"] = deploy_passphrase
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(REPO_ROOT),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         stdout, stderr = await proc.communicate()
         out = stdout.decode(errors="ignore").strip()
@@ -395,10 +408,15 @@ async def _finalize_session(channel: discord.abc.Messageable, user_id: int):
         "note_present": bool(note.strip()),
     }
 
+    deploy_passphrase = session.pop("deploy_passphrase", None)
+    if not session.get("commit_authorized"):
+        deploy_passphrase = None
+
     reply = await process_entry(
         entry_text,
         metadata=metadata,
         allow_commit=session.get("commit_authorized", False),
+        deploy_passphrase=deploy_passphrase,
     )
     await channel.send(reply)
     _end_session(user_id)
@@ -438,9 +456,27 @@ async def _handle_session_message(message: discord.Message):
         if session.get("commit_code") and content.strip().upper() == session["commit_code"].upper():
             session["commit_authorized"] = True
             session["awaiting_commit_code"] = False
+            if _passphrase_required():
+                session["awaiting_passphrase"] = True
+                await message.channel.send(
+                    "Clave aceptada. Envía la frase de paso del deploy key o escribe 'skip' para guardar sin push."
+                )
+                return
             await _finalize_session(message.channel, user_id)
             return
         await message.channel.send("Clave incorrecta. Copia el código exacto o escribe 'skip'.")
+        return
+
+    if session and session.get("awaiting_passphrase"):
+        if content.lower() == "skip":
+            session["deploy_passphrase"] = None
+            session["commit_authorized"] = False
+            session["awaiting_passphrase"] = False
+            await _finalize_session(message.channel, user_id)
+            return
+        session["deploy_passphrase"] = content
+        session["awaiting_passphrase"] = False
+        await _finalize_session(message.channel, user_id)
         return
 
     if not session:
