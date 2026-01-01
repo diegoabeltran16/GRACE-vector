@@ -234,3 +234,6 @@ venv/
 data/registros/*.tmp
 
 deploy/
+
+# Service environment (server-only secret, keep out of git)
+grace_bot.env
