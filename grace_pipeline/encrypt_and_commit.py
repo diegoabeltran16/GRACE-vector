@@ -291,6 +291,26 @@ def run_git(
         if commit_proc.returncode != 0:
             raise RuntimeError("git commit failed")
         if push:
+            # Ensure local branch is up-to-date (fast-forward) before pushing.
+            # Determine branch to operate on.
+            branch = push_branch
+            if not branch:
+                br_proc = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, capture_output=True, text=True, env=env)
+                if br_proc.returncode != 0:
+                    raise RuntimeError("Unable to determine current git branch")
+                branch = br_proc.stdout.strip()
+
+            # Fetch remote updates and attempt fast-forward merge.
+            fetch_proc = subprocess.run(["git", "fetch", "origin"], cwd=repo_root, env=env)
+            if fetch_proc.returncode != 0:
+                raise RuntimeError("git fetch failed")
+
+            ff_proc = subprocess.run(["git", "merge", "--ff-only", f"origin/{branch}"], cwd=repo_root, env=env)
+            if ff_proc.returncode != 0:
+                raise RuntimeError(
+                    "remote contains changes; fast-forward merge failed. Pull/rebase the server repository before pushing"
+                )
+
             cmd = ["git", "push"]
             if push_remote:
                 cmd.append(push_remote)
