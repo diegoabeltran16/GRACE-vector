@@ -11,6 +11,11 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 
+try:  # Local execution fallback
+    from . import git_sync  # type: ignore
+except ImportError:  # pragma: no cover
+    import git_sync  # type: ignore
+
 
 # Configuration
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -165,6 +170,10 @@ def _start_session(user_id: int) -> dict:
         "commit_authorized": False,
         "awaiting_passphrase": False,
         "deploy_passphrase": None,
+        "prompts_started": False,
+        "sync_attempted": False,
+        "sync_success": None,
+        "sync_output": None,
     }
     SESSIONS[user_id] = session
     return session
@@ -290,19 +299,10 @@ async def checkin(ctx: commands.Context):
     if not isinstance(ctx.channel, discord.DMChannel):
         await ctx.reply("Por privacidad, te escribo por DM para el check-in.")
         dm = await ctx.author.create_dm()
-        _start_session(ctx.author.id)
-        await dm.send(
-            "Iniciamos un check-in guiado GRACE. Responde con número o código. "
-            "Usa 'cancel' para salir."
-        )
-        await _prompt_step(dm, ctx.author.id)
+        await _begin_checkin_conversation(dm, ctx.author.id)
         return
 
-    _start_session(ctx.author.id)
-    await ctx.reply(
-        "Iniciamos un check-in guiado GRACE. Responde con número o código. Usa 'cancel' para salir."
-    )
-    await _prompt_step(ctx.channel, ctx.author.id)
+    await _begin_checkin_conversation(ctx.channel, ctx.author.id)
 
 
 async def process_entry(
@@ -368,7 +368,10 @@ async def process_entry(
 async def _prompt_step(channel: discord.abc.Messageable, user_id: int):
     session = _current_session(user_id)
     if not session:
-        session = _start_session(user_id)
+        await channel.send(
+            "No hay una sesión activa. Escribe cualquier mensaje para iniciar un nuevo check-in."
+        )
+        return
 
     step = SESSION_STEPS[session["step_index"]]
     if step == "NOTE":
@@ -426,6 +429,15 @@ def _generate_commit_code() -> str:
     return f"{COMMIT_CODE_PREFIX}-{secrets.token_hex(3).upper()}"
 
 
+async def _begin_checkin_conversation(channel: discord.abc.Messageable, user_id: int):
+    _start_session(user_id)
+    await channel.send(
+        "Iniciamos un check-in guiado GRACE. Responde con número o código y usa 'cancel' para salir.\n"
+        "Antes de las preguntas necesito una clave temporal para sincronizar el repositorio y permitir commit/push."
+    )
+    await _prompt_commit_code(channel, user_id)
+
+
 async def _prompt_commit_code(channel: discord.abc.Messageable, user_id: int):
     session = _current_session(user_id)
     if not session:
@@ -441,6 +453,57 @@ async def _prompt_commit_code(channel: discord.abc.Messageable, user_id: int):
     )
 
 
+async def _start_prompts(channel: discord.abc.Messageable, user_id: int):
+    session = _current_session(user_id)
+    if not session:
+        return
+    if not session.get("prompts_started"):
+        session["prompts_started"] = True
+    await _prompt_step(channel, user_id)
+
+
+async def _sync_repo_before_prompts(channel: discord.abc.Messageable, user_id: int):
+    session = _current_session(user_id)
+    if not session:
+        return
+    if session.get("sync_attempted"):
+        await _start_prompts(channel, user_id)
+        return
+    await channel.send("Sincronizando repositorio con origin antes de continuar...")
+    passphrase = session.get("deploy_passphrase")
+
+    def _pull():
+        env = {}
+        if passphrase:
+            env["GRACE_DEPLOY_KEY_PASSPHRASE"] = passphrase
+        return git_sync.sync_repository(REPO_ROOT, env_overrides=env)
+
+    loop = asyncio.get_running_loop()
+    success, output = await loop.run_in_executor(None, _pull)
+    session["sync_attempted"] = True
+    session["sync_success"] = success
+    session["sync_output"] = output
+    status = "✅ Pull completado" if success else "❌ Pull con errores"
+    await channel.send(f"{status}:\n```\n{output}\n```")
+    if not success:
+        session["commit_authorized"] = False
+        session["deploy_passphrase"] = None
+        await channel.send(
+            "Continuaré sin commit/push hasta que sincronices manualmente el repositorio en el servidor."
+        )
+    await _start_prompts(channel, user_id)
+
+
+async def _after_authorization(channel: discord.abc.Messageable, user_id: int):
+    session = _current_session(user_id)
+    if not session or session.get("prompts_started"):
+        return
+    if session.get("commit_authorized"):
+        await _sync_repo_before_prompts(channel, user_id)
+    else:
+        await _start_prompts(channel, user_id)
+
+
 async def _handle_session_message(message: discord.Message):
     user_id = message.author.id
     session = _current_session(user_id)
@@ -451,7 +514,8 @@ async def _handle_session_message(message: discord.Message):
         if content.lower() == "skip":
             session["commit_authorized"] = False
             session["awaiting_commit_code"] = False
-            await _finalize_session(message.channel, user_id)
+            await message.channel.send("Continuaré sin commit/push para esta sesión.")
+            await _after_authorization(message.channel, user_id)
             return
         if session.get("commit_code") and content.strip().upper() == session["commit_code"].upper():
             session["commit_authorized"] = True
@@ -462,7 +526,7 @@ async def _handle_session_message(message: discord.Message):
                     "Clave aceptada. Envía la frase de paso del deploy key o escribe 'skip' para guardar sin push."
                 )
                 return
-            await _finalize_session(message.channel, user_id)
+            await _after_authorization(message.channel, user_id)
             return
         await message.channel.send("Clave incorrecta. Copia el código exacto o escribe 'skip'.")
         return
@@ -472,19 +536,16 @@ async def _handle_session_message(message: discord.Message):
             session["deploy_passphrase"] = None
             session["commit_authorized"] = False
             session["awaiting_passphrase"] = False
-            await _finalize_session(message.channel, user_id)
+            await message.channel.send("Se guardará sin commit/push en esta sesión.")
+            await _after_authorization(message.channel, user_id)
             return
         session["deploy_passphrase"] = content
         session["awaiting_passphrase"] = False
-        await _finalize_session(message.channel, user_id)
+        await _after_authorization(message.channel, user_id)
         return
 
     if not session:
-        session = _start_session(user_id)
-        await message.channel.send(
-            "Iniciamos un check-in guiado GRACE. Responde con número o código. Escribe 'cancel' para salir."
-        )
-        await _prompt_step(message.channel, user_id)
+        await _begin_checkin_conversation(message.channel, user_id)
         return
 
     # If we are waiting for a neutral collapse decision
@@ -513,7 +574,7 @@ async def _handle_session_message(message: discord.Message):
     if step == "NOTE":
         session["note"] = "" if content.lower() == "skip" else content
         session["step_index"] = len(SESSION_STEPS)
-        await _prompt_commit_code(message.channel, user_id)
+        await _finalize_session(message.channel, user_id)
         return
 
     # Handle dimension selection
