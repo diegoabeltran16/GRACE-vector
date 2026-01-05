@@ -473,10 +473,14 @@ async def _sync_repo_before_prompts(channel: discord.abc.Messageable, user_id: i
     passphrase = session.get("deploy_passphrase")
 
     def _pull():
-        env = {}
+        env = None
         if passphrase:
-            env["GRACE_DEPLOY_KEY_PASSPHRASE"] = passphrase
-        return git_sync.sync_repository(REPO_ROOT, env_overrides=env)
+            env = {"GRACE_DEPLOY_KEY_PASSPHRASE": passphrase}
+        return git_sync.sync_repository(
+            REPO_ROOT,
+            env_overrides=env,
+            passphrase=passphrase,
+        )
 
     loop = asyncio.get_running_loop()
     success, output = await loop.run_in_executor(None, _pull)
