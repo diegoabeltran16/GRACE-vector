@@ -5,9 +5,14 @@ import json
 import time
 import asyncio
 import secrets
+import tempfile
+import traceback
 from datetime import datetime, timezone
 import subprocess
 from pathlib import Path
+
+# Discord message hard limit
+DISCORD_MSG_LIMIT = 2000
 
 import discord
 from discord.ext import commands
@@ -341,6 +346,14 @@ async def checkin(ctx: commands.Context):
     await _begin_checkin_conversation(ctx.channel, ctx.author.id)
 
 
+def _truncate_for_discord(text: str, limit: int = DISCORD_MSG_LIMIT) -> str:
+    """Truncate a message so it fits within Discord's character limit."""
+    if len(text) <= limit:
+        return text
+    suffix = "\n… (truncado)"
+    return text[: limit - len(suffix)] + suffix
+
+
 async def process_entry(
     entry_text: str,
     metadata: dict | None = None,
@@ -355,50 +368,75 @@ async def process_entry(
     if not script.exists():
         return "Pipeline script not found on host."
 
-    cmd = [sys.executable, str(script), "--entry", entry_text]
-    if metadata:
-        try:
-            metadata_json = json.dumps(metadata, ensure_ascii=False)
-            cmd.extend(["--metadata", metadata_json])
-        except Exception:
-            return "Could not serialize metadata; please try again."
-    # If push is not explicitly allowed on this host, prevent committing/pushing
-    commit_allowed = allow_commit and ALLOW_PUSH
-    if commit_allowed:
-        cmd.append("--push")
-    else:
-        cmd.append("--no-commit")
-
-    env = os.environ.copy()
-    if allow_commit and deploy_passphrase:
-        env["GRACE_DEPLOY_KEY_PASSPHRASE"] = deploy_passphrase
-
+    # Write entry and metadata to temp files to avoid Windows CLI arg
+    # length / encoding issues (observations can be long).
+    entry_file = None
+    meta_file = None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(REPO_ROOT),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
+        entry_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", encoding="utf-8", delete=False,
         )
-        stdout, stderr = await proc.communicate()
-        out = stdout.decode(errors="ignore").strip()
-        err = stderr.decode(errors="ignore").strip()
-        if proc.returncode == 0:
-            reply = "Entry processed successfully."
-            if out:
-                reply += f"\n{out}"
+        entry_file.write(entry_text)
+        entry_file.close()
+
+        cmd = [sys.executable, str(script), "--from-file", entry_file.name]
+
+        if metadata:
+            try:
+                meta_file = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".json", encoding="utf-8", delete=False,
+                )
+                json.dump(metadata, meta_file, ensure_ascii=False)
+                meta_file.close()
+                cmd.extend(["--metadata", meta_file.name])
+            except Exception as exc:
+                return f"Could not serialize metadata: {exc}"
+
+        # If push is not explicitly allowed on this host, prevent committing/pushing
+        commit_allowed = allow_commit and ALLOW_PUSH
+        if commit_allowed:
+            cmd.append("--push")
         else:
-            reply = "Error while processing entry."
-            if err:
-                reply += f"\n{err}"
-            elif out:
-                reply += f"\n{out}"
-        if allow_commit and not ALLOW_PUSH:
-            reply += "\nCommit/push no habilitado en este host (GRACE_ALLOW_PUSH!=1)."
-        return reply
-    except Exception as exc:
-        return f"Failed to run pipeline: {exc}"
+            cmd.append("--no-commit")
+
+        env = os.environ.copy()
+        if allow_commit and deploy_passphrase:
+            env["GRACE_DEPLOY_KEY_PASSPHRASE"] = deploy_passphrase
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(REPO_ROOT),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, stderr = await proc.communicate()
+            out = stdout.decode(errors="ignore").strip()
+            err = stderr.decode(errors="ignore").strip()
+            if proc.returncode == 0:
+                reply = "Entry processed successfully."
+                if out:
+                    reply += f"\n{out}"
+            else:
+                reply = "Error while processing entry."
+                if err:
+                    reply += f"\n{err}"
+                elif out:
+                    reply += f"\n{out}"
+            if allow_commit and not ALLOW_PUSH:
+                reply += "\nCommit/push no habilitado en este host (GRACE_ALLOW_PUSH!=1)."
+            return reply
+        except Exception as exc:
+            return f"Failed to run pipeline: {exc}"
+    finally:
+        # Clean up temp files
+        for tmp in (entry_file, meta_file):
+            if tmp is not None:
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
 
 
 async def _prompt_step(channel: discord.abc.Messageable, user_id: int):
@@ -465,14 +503,23 @@ async def _finalize_session(channel: discord.abc.Messageable, user_id: int):
     if not session.get("commit_authorized"):
         deploy_passphrase = None
 
-    reply = await process_entry(
-        entry_text,
-        metadata=metadata,
-        allow_commit=session.get("commit_authorized", False),
-        deploy_passphrase=deploy_passphrase,
-    )
-    await channel.send(reply)
-    _end_session(user_id)
+    try:
+        reply = await process_entry(
+            entry_text,
+            metadata=metadata,
+            allow_commit=session.get("commit_authorized", False),
+            deploy_passphrase=deploy_passphrase,
+        )
+        await channel.send(_truncate_for_discord(reply))
+    except Exception as exc:
+        err_msg = f"⚠️ Error al procesar entrada: {exc}"
+        print(f"[GRACE-bot] _finalize_session error: {traceback.format_exc()}")
+        try:
+            await channel.send(_truncate_for_discord(err_msg))
+        except Exception:
+            pass
+    finally:
+        _end_session(user_id)
 
 
 def _generate_commit_code() -> str:
