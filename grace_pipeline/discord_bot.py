@@ -5,6 +5,7 @@ import json
 import time
 import asyncio
 import secrets
+from datetime import datetime, timezone
 import subprocess
 from pathlib import Path
 
@@ -55,9 +56,41 @@ DIM_DESCRIPTIONS = {
     "G": "Género: cómo sientes tu identidad/expresión hoy",
     "R": "Relaciones: calidad de tus vínculos hoy",
     "A": "Aprendizaje cognitivo: claridad mental",
-    "C": "Cuerpo: energía, tensión o desconexión",
+    "C": "Cuerpo: energía, activación o desconexión",
     "E": "Experiencia personal: tono emocional/narrativo"
 }
+
+# Observation prompts — qualitative follow-up per dimension
+MAX_OBSERVATION_LENGTH = 2000
+
+
+def _sanitize_observation(text: str) -> str:
+    """Strip control chars, collapse whitespace, truncate."""
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    text = " ".join(text.split())
+    return text[:MAX_OBSERVATION_LENGTH]
+
+
+def _observation_prompt(dim: str, code: str, bit: int | None = None, was_neutral: bool = False) -> str:
+    """Build a context-aware follow-up prompt after the user rates a dimension."""
+    emoji = DIM_EMOJI.get(dim, "•")
+    label = GRACE_STATES.get(dim, {}).get(code, code)
+    if was_neutral:
+        pole = "yin (receptiv@/tranquil@)" if bit == 0 else "yang (activ@/enérgic@)"
+        return (
+            f"{emoji} Colapsaste **{dim}** hacia **{pole}**.\n"
+            "¿Qué factores contribuyen a ese estado? "
+            "(p. ej. descanso, actividad, interacción, tarea)\n"
+            "Escribe una breve observación o `omitir`:"
+        )
+    idx = _code_index(code)
+    side = "bajo" if idx is not None and idx <= 2 else "alto"
+    return (
+        f"{emoji} Marcaste **{code}** — {label} (lado {side}).\n"
+        "¿Qué sucedió o qué explica por qué te sientes así?\n"
+        "Escribe una breve observación o `omitir`:"
+    )
+
 
 def _load_token_from_file() -> str | None:
     candidates = []
@@ -162,9 +195,12 @@ def _start_session(user_id: int) -> dict:
         "step_index": 0,
         "answers": {},
         "bits": {},
+        "observations": {},
         "note": "",
         "last_options": None,
         "pending_collapse_dim": None,
+        "pending_observation_dim": None,
+        "observation_start_ts": None,
         "awaiting_commit_code": False,
         "commit_code": None,
         "commit_authorized": False,
@@ -391,6 +427,8 @@ async def _finalize_session(channel: discord.abc.Messageable, user_id: int):
     bits = session.get("bits", {})
     note = session.get("note", "")
 
+    observations = session.get("observations", {})
+
     # Build human-readable entry text
     lines = ["✨ **Check-in GRACE (Discord bot)**"]
     for dim in DIM_ORDER:
@@ -401,14 +439,26 @@ async def _finalize_session(channel: discord.abc.Messageable, user_id: int):
         suffix = f" ({bit_label})" if bit_label else ""
         emoji = DIM_EMOJI.get(dim, "•")
         lines.append(f"- {emoji} **{dim}**: {code} — {label}{suffix}")
+        obs = observations.get(dim)
+        if obs and not obs.get("omitted") and obs.get("note"):
+            lines.append(f"  └ Obs: {obs['note']}")
     lines.append(f"- **Nota**: {note if note else '(sin nota)'}")
     entry_text = "\n".join(lines)
 
+    # Build observations list for metadata
+    obs_list = []
+    for dim in DIM_ORDER:
+        obs = observations.get(dim)
+        if obs is not None:
+            obs_list.append({"dim": dim, **obs})
+
     metadata = {
+        "schema_version": 2,
         "source": "discord_bot",
         "grace": answers,
         "bits": bits,
         "note_present": bool(note.strip()),
+        "observations": obs_list,
     }
 
     deploy_passphrase = session.pop("deploy_passphrase", None)
@@ -552,17 +602,58 @@ async def _handle_session_message(message: discord.Message):
         await _begin_checkin_conversation(message.channel, user_id)
         return
 
+    # If we are waiting for the qualitative observation
+    if session.get("pending_observation_dim"):
+        if content.lower() in {"cancel", "stop", "salir"}:
+            _end_session(user_id)
+            await message.channel.send("Sesión cancelada. Escribe cualquier cosa para iniciar de nuevo.")
+            return
+        dim = session["pending_observation_dim"]
+        start_ts = session.get("observation_start_ts") or time.monotonic()
+        latency_ms = int((time.monotonic() - start_ts) * 1000)
+        if content.lower() == "omitir":
+            session["observations"][dim] = {
+                "note": "",
+                "omitted": True,
+                "note_ts": None,
+                "latency_ms": latency_ms,
+            }
+        else:
+            session["observations"][dim] = {
+                "note": _sanitize_observation(content),
+                "omitted": False,
+                "note_ts": datetime.now(timezone.utc).isoformat(),
+                "latency_ms": latency_ms,
+            }
+        # Tag balance_pole for neutral-collapsed dimensions
+        code = session["answers"].get(dim, "")
+        if _code_index(code) == 3:
+            bit = session["bits"].get(dim)
+            session["observations"][dim]["balance_pole"] = (
+                "yin" if bit == 0 else "yang" if bit == 1 else None
+            )
+        session["pending_observation_dim"] = None
+        session["observation_start_ts"] = None
+        session["step_index"] += 1
+        if session["step_index"] >= len(SESSION_STEPS):
+            await _finalize_session(message.channel, user_id)
+        else:
+            await _prompt_step(message.channel, user_id)
+        return
+
     # If we are waiting for a neutral collapse decision
     if session.get("pending_collapse_dim"):
         dim = session["pending_collapse_dim"]
         if content in {"0", "1"}:
             session["bits"][dim] = int(content)
             session["pending_collapse_dim"] = None
-            session["step_index"] += 1
-            if session["step_index"] >= len(SESSION_STEPS):
-                await _finalize_session(message.channel, user_id)
-            else:
-                await _prompt_step(message.channel, user_id)
+            # Trigger qualitative observation prompt
+            session["pending_observation_dim"] = dim
+            session["observation_start_ts"] = time.monotonic()
+            code = session["answers"].get(dim, "")
+            await message.channel.send(
+                _observation_prompt(dim, code, bit=int(content), was_neutral=True)
+            )
             return
         await message.channel.send("Selecciona 0 o 1 para colapsar el estado Neutral.")
         return
@@ -607,12 +698,11 @@ async def _handle_session_message(message: discord.Message):
         return
 
     session["bits"][step] = bit
-    session["step_index"] += 1
-
-    if session["step_index"] >= len(SESSION_STEPS):
-        await _finalize_session(message.channel, user_id)
-    else:
-        await _prompt_step(message.channel, user_id)
+    # Trigger qualitative observation prompt
+    session["pending_observation_dim"] = step
+    session["observation_start_ts"] = time.monotonic()
+    code = session["answers"].get(step, "")
+    await message.channel.send(_observation_prompt(step, code))
 
 
 @bot.command(name="grace")
