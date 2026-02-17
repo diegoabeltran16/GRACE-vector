@@ -152,3 +152,104 @@ class TestSchemaVersion:
 
         # cleanup
         bot_module._end_session(user_id)
+
+
+class TestTruncateForDiscord:
+    """Verify Discord message truncation helper."""
+
+    def test_short_message_unchanged(self):
+        msg = "Hello world"
+        assert bot_module._truncate_for_discord(msg) == msg
+
+    def test_exact_limit_unchanged(self):
+        msg = "x" * bot_module.DISCORD_MSG_LIMIT
+        assert bot_module._truncate_for_discord(msg) == msg
+
+    def test_long_message_truncated(self):
+        msg = "a" * (bot_module.DISCORD_MSG_LIMIT + 500)
+        result = bot_module._truncate_for_discord(msg)
+        assert len(result) <= bot_module.DISCORD_MSG_LIMIT
+        assert result.endswith("… (truncado)")
+
+    def test_custom_limit(self):
+        msg = "a" * 100
+        result = bot_module._truncate_for_discord(msg, limit=50)
+        assert len(result) <= 50
+        assert result.endswith("… (truncado)")
+
+
+class TestFinalizeSessionErrorHandling:
+    """Verify _finalize_session sends error messages on failure and always cleans up."""
+
+    def test_finalize_reports_error_and_cleans_session(self):
+        asyncio.get_event_loop().run_until_complete(self._run_error_test())
+
+    async def _run_error_test(self):
+        user_id = 77777
+        session = bot_module._start_session(user_id)
+        session["step_index"] = len(bot_module.SESSION_STEPS)
+        session["answers"] = {"G": "G4", "R": "R2", "A": "A3", "C": "C5", "E": "E1"}
+        session["bits"] = {"G": 1, "R": 0, "A": 0, "C": 1, "E": 0}
+        session["observations"] = {}
+        session["note"] = "Test"
+
+        async def failing_process_entry(*args, **kwargs):
+            raise RuntimeError("Simulated pipeline failure")
+
+        channel = AsyncMock()
+
+        with patch.object(bot_module, "process_entry", side_effect=failing_process_entry):
+            await bot_module._finalize_session(channel, user_id)
+
+        # Session must be cleaned up even on error
+        assert bot_module._current_session(user_id) is None
+
+        # An error message should have been sent to the channel
+        sent_messages = [str(call.args[0]) for call in channel.send.call_args_list]
+        assert any("Error" in msg or "error" in msg.lower() for msg in sent_messages), \
+            f"Expected error message in: {sent_messages}"
+
+
+class TestProcessEntryUsesTempFiles:
+    """Verify process_entry writes temp files instead of passing args directly."""
+
+    def test_uses_from_file_flag(self):
+        asyncio.get_event_loop().run_until_complete(self._run_tempfile_test())
+
+    async def _run_tempfile_test(self):
+        captured_cmd = {}
+
+        # Mock create_subprocess_exec to capture the command
+        async def mock_subprocess(*args, **kwargs):
+            captured_cmd["args"] = list(args)
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"OK output", b""))
+            mock_proc.returncode = 0
+            return mock_proc
+
+        # Mock script.exists() to return True
+        with patch.object(bot_module.Path, "exists", return_value=True):
+            with patch("asyncio.create_subprocess_exec", side_effect=mock_subprocess):
+                metadata = {
+                    "schema_version": 2,
+                    "source": "test",
+                    "observations": [{"dim": "G", "note": "x" * 500}],
+                }
+                result = await bot_module.process_entry(
+                    "Test entry text",
+                    metadata=metadata,
+                    allow_commit=False,
+                )
+
+        args = captured_cmd.get("args", [])
+        # Should use --from-file, NOT --entry
+        assert "--from-file" in args, f"Expected --from-file in {args}"
+        assert "--entry" not in args, f"Did not expect --entry in {args}"
+        # Should use --metadata with a file path (not raw JSON)
+        if "--metadata" in args:
+            meta_idx = args.index("--metadata")
+            meta_val = args[meta_idx + 1]
+            # The value should be a file path, not raw JSON
+            assert not meta_val.startswith("{"), \
+                f"Expected file path for --metadata, got JSON: {meta_val[:80]}"
+        assert "Entry processed successfully." in result
