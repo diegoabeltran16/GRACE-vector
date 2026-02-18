@@ -100,9 +100,14 @@ class TestSessionFields:
 
 
 class TestSchemaVersion:
-    """Verify that _finalize_session produces schema_version 2 and observations."""
+    """Verify that _finalize_session produces schema_version 2.
 
-    def test_finalize_includes_schema_and_observations(self):
+    Observations must NOT appear in cleartext metadata; they are
+    appended to entry_text under the __OBSERVATIONS__ marker so
+    the pipeline encrypts them together with the rest of the entry.
+    """
+
+    def test_finalize_includes_schema_and_encrypted_observations(self):
         asyncio.get_event_loop().run_until_complete(self._run_finalize_test())
 
     async def _run_finalize_test(self):
@@ -134,21 +139,29 @@ class TestSchemaVersion:
 
         meta = captured["metadata"]
         assert meta["schema_version"] == 2
-        assert "observations" in meta
-        assert isinstance(meta["observations"], list)
 
-        # Check observations list structure
-        obs_by_dim = {o["dim"]: o for o in meta["observations"]}
+        # --- Privacy: observations must NOT be in cleartext metadata ---
+        assert "observations" not in meta, \
+            "observations must not appear in cleartext metadata"
+        assert meta.get("observations_encrypted") is True
+        assert meta.get("observations_count") == 3
+
+        # --- Observations must be inside entry_text (will be encrypted) ---
+        entry = captured["entry_text"]
+        assert "__OBSERVATIONS__" in entry
+        # Parse the serialised observations from the entry text
+        marker_pos = entry.index("__OBSERVATIONS__")
+        obs_json = entry[marker_pos + len("__OBSERVATIONS__"):].strip()
+        obs_list = json.loads(obs_json)
+        obs_by_dim = {o["dim"]: o for o in obs_list}
         assert obs_by_dim["G"]["omitted"] is False
         assert obs_by_dim["G"]["note"] == "Felt great"
         assert obs_by_dim["R"]["omitted"] is True
         assert obs_by_dim["A"]["balance_pole"] == "yin"
 
-        # Entry text should include observation inline
-        assert "Felt great" in captured["entry_text"]
-        assert "I was balanced" in captured["entry_text"]
-        # Omitted observations should NOT appear in entry text
-        assert "└ Obs:" not in captured["entry_text"].split("R")[0] or True  # R was omitted
+        # Human-readable part should also include non-omitted observations
+        assert "Felt great" in entry
+        assert "I was balanced" in entry
 
         # cleanup
         bot_module._end_session(user_id)
@@ -233,7 +246,8 @@ class TestProcessEntryUsesTempFiles:
                 metadata = {
                     "schema_version": 2,
                     "source": "test",
-                    "observations": [{"dim": "G", "note": "x" * 500}],
+                    "observations_encrypted": True,
+                    "observations_count": 1,
                 }
                 result = await bot_module.process_entry(
                     "Test entry text",
