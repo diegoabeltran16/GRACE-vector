@@ -12,7 +12,7 @@ except ImportError:  # pragma: no cover - fallback when running as script
 
 DEFAULT_BRANCH = os.environ.get(
     "GRACE_SYNC_BRANCH",
-    os.environ.get("GRACE_DEFAULT_BRANCH", "prepare-to-collaborate"),
+    os.environ.get("GRACE_DEFAULT_BRANCH", "data"),
 )
 
 

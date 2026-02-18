@@ -374,6 +374,15 @@ def main() -> None:
     timestamp = datetime.now(timezone.utc).isoformat()
     metadata = load_metadata(args, metadata_defaults)
 
+    # Safety check: reject records that would leak qualitative observations
+    # in cleartext metadata.  Observations must be inside the encrypted
+    # entry_text (appended by the bot under the __OBSERVATIONS__ marker).
+    if "observations" in metadata and metadata["observations"]:
+        raise SystemExit(
+            "FATAL: metadata contains cleartext 'observations'. "
+            "Observations must be embedded in the encrypted entry_text, not metadata."
+        )
+
     record = {
         "schema_version": 1,
         "entry_id": entry_id,

@@ -396,6 +396,8 @@ async def process_entry(
         commit_allowed = allow_commit and ALLOW_PUSH
         if commit_allowed:
             cmd.append("--push")
+            # Push to the 'data' branch on GRACE-data repo
+            cmd.extend(["--push-branch", os.environ.get("GRACE_DATA_BRANCH", "data")])
         else:
             cmd.append("--no-commit")
 
@@ -483,12 +485,20 @@ async def _finalize_session(channel: discord.abc.Messageable, user_id: int):
     lines.append(f"- **Nota**: {note if note else '(sin nota)'}")
     entry_text = "\n".join(lines)
 
-    # Build observations list for metadata
+    # Build observations list — these go into the encrypted entry_text,
+    # NOT into cleartext metadata, to protect qualitative notes.
     obs_list = []
     for dim in DIM_ORDER:
         obs = observations.get(dim)
         if obs is not None:
             obs_list.append({"dim": dim, **obs})
+
+    # Append serialised observations to the plaintext so they get encrypted
+    # by the pipeline together with the rest of the entry.
+    if obs_list:
+        entry_text += "\n__OBSERVATIONS__\n" + json.dumps(
+            obs_list, ensure_ascii=False
+        )
 
     metadata = {
         "schema_version": 2,
@@ -496,7 +506,8 @@ async def _finalize_session(channel: discord.abc.Messageable, user_id: int):
         "grace": answers,
         "bits": bits,
         "note_present": bool(note.strip()),
-        "observations": obs_list,
+        "observations_encrypted": bool(obs_list),
+        "observations_count": len(obs_list),
     }
 
     deploy_passphrase = session.pop("deploy_passphrase", None)
